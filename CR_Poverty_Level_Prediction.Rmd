@@ -1,11 +1,6 @@
 
 ```{r }
-# Northeastern University - Fall 2019 
-# ALY6020 - Predictive Analytics
-# Marco Montes de Oca
-
-# Final Project - Submitted By Deepak Prasad Baskaran, Nidhi Shah, Nithish Saravanan
-
+# Prediction for Costa Rican Households Poverty Level
 # Install the required packages and load the libraries required for the execution
 
 library(tidyverse)     #Used in Data preparation
