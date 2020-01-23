@@ -1,0 +1,491 @@
+
+```{r }
+# Northeastern University - Fall 2019 
+# ALY6020 - Predictive Analytics
+# Marco Montes de Oca
+
+# Final Project - Submitted By Deepak Prasad Baskaran, Nidhi Shah, Nithish Saravanan
+
+# Install the required packages and load the libraries required for the execution
+
+library(tidyverse)     #Used in Data preparation
+library(SmartEDA)      #Used for EDA
+library(outliers)      #Finding Outliers
+library(MASS)           
+library(ordinal)
+library(ROCR)
+library(Matrix)        #Creating Matrix
+library(xgboost)       #Used for Optimization of Model
+library(magrittr)      #Used in Data Cleaning
+library(caret)         
+
+```
+```{r Step 1 - Load and understand the data }
+
+#Import and Read the data
+cr_data <- read.csv(file.choose(), sep=",", header = TRUE )
+
+#Glimpse of the dataset
+head(cr_data)
+
+#Dropping off unwanted features
+cr_data$Id<-NULL
+cr_data$idhogar<-NULL
+cr_data$SQBage<-NULL
+cr_data$agesq<-NULL
+cr_data$SQBescolari<-NULL
+cr_data$SQBhogar_total<-NULL
+cr_data$SQBedjefe<-NULL
+cr_data$SQBhogar_nin<-NULL
+cr_data$SQBovercrowding<-NULL
+cr_data$SQBdependency<-NULL
+cr_data$SQBmeaned<-NULL
+cr_data$dependency<-NULL
+cr_data$edjefe<-NULL
+cr_data$edjefa<-NULL
+
+# Structure of the dataset
+str(cr_data)
+
+# Dimensions of the dataset
+dim(cr_data)
+
+#Column name change - user readable way
+names(cr_data)[names(cr_data)=="rez_esc"] <- "YearsBehindSchool"
+names(cr_data)[names(cr_data)=="v18q1"] <- "NumberofTabletsHouseholdOwns" 
+names(cr_data)[names(cr_data)=="v2a1"] <- "MonthlyRent"
+names(cr_data)[names(cr_data)=="meaneduc"] <- "AverageEducation"
+names(cr_data)[names(cr_data)=="SQBmeaned"] <- "SquareMeanOfEducation"
+colnames(cr_data)
+
+# EDA for the dataset 
+ExpData(data=cr_data, type=1)
+
+```
+```{r Step 2 - Data Preparation }
+#Finding the missing values
+cr_missing = cr_data %>% 
+  summarise_all((funs(sum(is.na(.))*100/n()))) 
+
+cr_missing <- gather(cr_missing,key = "features",value ="missing_data_percent")
+cr_missing
+
+#Features with more than 0.055% missing values
+cr_missing_features <- filter(cr_missing, missing_data_percent > 0.055)
+cr_missing_features
+
+#Graphical Representation of missing values
+cr_missing_graph <- cr_missing_features %>% ggplot(data = cr_missing_features, mapping = aes(x=features,y=missing_data_percent)) + geom_bar(stat = "identity",fill="steelblue", width = 0.3) +
+   theme_minimal() + labs(title = "Graph showing Features with Missing Values", x = "Features", y = "Missing Data Percent") + coord_flip()  
+
+cr_missing_graph
+
+#Handling the missing values 
+
+#1. Removing Non-significant varibles/More missing values varible from Data set
+cr_data$YearsBehindSchool <- NULL
+ncol(cr_data)
+
+#2. Substituting the NA values with the mean or zero values 
+cr_data$MonthlyRent <- ifelse(is.na(cr_data$MonthlyRent),
+                        ave(cr_data$MonthlyRent,FUN = function(x) mean(x,na.rm = TRUE)),
+                        cr_data$MonthlyRent)
+#3. Assigning zero values
+cr_data$NumberofTabletsHouseholdOwns[is.na(cr_data$NumberofTabletsHouseholdOwns)]<-0
+cr_data$NumberofTabletsHouseholdOwns
+
+# EDA for the dataset 
+ExpData(data=cr_data, type=1)
+
+#Checking the outliers in by using BoxPlot
+outlier_graph <- ggplot(cr_data,aes(x= "MonthlyRent", y=MonthlyRent)) + geom_boxplot() + labs(title = "Graph showing Outliers for the Feature MonthlyRent ", x = "Monthly_Rent", y = "Monthly_Rent_Cost")
+outlier_graph
+
+#Using  Z- score value method to find the outliers
+outlier_score <- scores(cr_data$MonthlyRent)
+outlier_flag <- outlier_score > 3 | outlier_score < -3
+
+# add outlier column to data set 
+cr_data$outlier_flag <- outlier_flag
+
+#creating data frame with outliers
+cr_data_outlier_df <- cr_data[outlier_score > 3 | outlier_score < -3,]
+head(cr_data_outlier_df)
+
+#number of outlier values
+nrow(cr_data_outlier_df)        #Total 159 values are outliers 
+
+#Handling Outliers
+
+#Treating outliers and inliners seperately
+cr_data_outlier_df <- cr_data[outlier_score > 3 | outlier_score < -3,]    #Outliers
+cr_data_outlier_df$Target  #Most of the values falls under target value 4 = Non-vulnerable household
+
+cr_data_outlier_df_rm <- cr_data[outlier_score < 3 | outlier_score > -3,] #Inliners
+cr_data_outlier_df_rm$Target
+
+#Removing the outliers from the data set
+cr_data_cln <- cr_data[cr_data$outlier_flag == F,]
+cr_data_cln$outlier_flag <- NULL
+cr_data$outlier_flag <- NULL
+
+#Glimpse of the clean dataset
+dim(cr_data_cln)
+head(cr_data_cln)
+head(cr_data)
+
+```
+```{r Step 3 - EDA  }
+
+# Descriptive Stastics
+summary(cr_data_cln)
+
+#Analyzing Target Variable classes (Predicting variable)
+cr_data_cln %>% ggplot(aes(Target)) +  geom_bar(color='Black',fill="orange")+ 
+  labs(title = "Graph showing Poverty Level", x = "Poverty Level", y = "Poverty Level Count")
+
+#Number of Rooms effect on Poverty Prediction
+cr_data_cln %>% ggplot(aes(as.factor(rooms))) +
+                geom_bar(aes(fill= as.factor(Target)),color="Black") + 
+                labs(title= "Relation between No. of Rooms and Poverty", x="Number of rooms",y="Count") +
+                guides(fill=guide_legend(title="Poverty Levels"))
+
+#Number of males younger than 12 and poverty level 
+cr_data_cln %>% ggplot(aes(x = as.factor(Target))) +
+                geom_bar(colour = "grey19", fill = "orange", alpha = 0.6 )+
+                facet_wrap(~as.factor(r4h1), scales = "free", ncol = 3) + 
+                theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8)) +
+                theme(strip.text = element_text(size = 9, face = "bold")) +
+                labs(title = "Relation between No. of males younger than 12 and Poverty Level", x = "Poverty Level", y = "Count of Male")
+
+#Data Transformation
+#Feautre sanitario
+cr_data_cln$sanitario2[cr_data_cln$sanitario2==1]<-2
+cr_data_cln$sanitario3[cr_data_cln$sanitario3==1]<-3
+cr_data_cln$sanitario5[cr_data_cln$sanitario5==1]<-5
+cr_data_cln$sanitario6[cr_data_cln$sanitario6==1]<-6
+sanitariow<-c("sanitario1","sanitario2","sanitario3","sanitario5","sanitario6")
+cr_data_cln$sanitario<-rowSums(cr_data_cln[,sanitariow])
+cr_data_cln$sanitario1<-NULL
+cr_data_cln$sanitario2<-NULL
+cr_data_cln$sanitario3<-NULL
+cr_data_cln$sanitario4<-NULL
+cr_data_cln$sanitario5<-NULL
+cr_data_cln$sanitario6<-NULL
+cr_data_cln$sanitario <-as.ordered(cr_data_cln$sanitario)
+
+#Feautre outside_material
+cr_data_cln$paredfibras[cr_data_cln$paredfibras==1]<-2
+cr_data_cln$pareddes[cr_data_cln$pareddes==1]<-3
+cr_data_cln$paredblolad[cr_data_cln$paredblolad==1]<-4
+cr_data_cln$paredmad[cr_data_cln$paredmad==1]<-5
+cr_data_cln$paredpreb[cr_data_cln$paredpreb==1]<-6
+cr_data_cln$paredzinc[cr_data_cln$paredzinc==1]<-7
+cr_data_cln$paredzocalo[cr_data_cln$paredzocalo==1]<-8
+outside_material<-c("paredother","paredfibras","pareddes","paredblolad","paredmad","paredpreb","paredzinc","paredzocalo")
+cr_data_cln$outside_material<-rowSums(cr_data_cln[,outside_material])
+cr_data_cln$paredother<-NULL
+cr_data_cln$paredfibras<-NULL
+cr_data_cln$pareddes<-NULL
+cr_data_cln$paredblolad<-NULL
+cr_data_cln$paredmad<-NULL
+cr_data_cln$paredpreb<-NULL
+cr_data_cln$paredzinc<-NULL
+cr_data_cln$paredzocalo<-NULL
+cr_data_cln$outside_material <-as.ordered(cr_data_cln$outside_material)
+
+#Feautre water
+cr_data_cln$abastaguafuera[cr_data_cln$abastaguafuera==1]<-2
+cr_data_cln$abastaguadentro[cr_data_cln$abastaguadentro==1]<-3
+WaterR<-c("abastaguafuera","abastaguadentro","abastaguano")
+cr_data_cln$Water<-rowSums(cr_data_cln[,WaterR])
+str(cr_data_cln$Water)
+cr_data_cln$abastaguano<-NULL
+cr_data_cln$abastaguafuera<-NULL
+cr_data_cln$abastaguadentro<-NULL
+cr_data_cln$Water <-as.ordered(cr_data_cln$Water)
+
+#Feautre electricity
+cr_data_cln$public[cr_data_cln$public==1]<-2
+cr_data_cln$coopele[cr_data_cln$coopele==1]<-3
+cr_data_cln$planpri[cr_data_cln$planpri==1]<-4
+electricityR<-c("public","coopele","planpri","noelec")
+cr_data_cln$electricity<-rowSums(cr_data_cln[,electricityR])
+str(cr_data_cln$electricity)
+cr_data_cln$public<-NULL
+cr_data_cln$coopele<-NULL
+cr_data_cln$planpri<-NULL
+cr_data_cln$noelec<-NULL
+cr_data_cln$electricity <-as.ordered(cr_data_cln$electricity)
+
+#Feautre Walls
+cr_data_cln$epared2[cr_data_cln$epared2==1]<-2
+cr_data_cln$epared3[cr_data_cln$epared3==1]<-3
+WallsR<-c("epared1","epared2","epared3")
+cr_data_cln$Walls<-rowSums(cr_data_cln[,WallsR])
+cr_data_cln$epared1<-NULL
+cr_data_cln$epared2<-NULL
+cr_data_cln$epared3<-NULL
+cr_data_cln$walls <-as.ordered(cr_data_cln$Walls)
+
+#Feautre Roof
+cr_data_cln$etecho2[cr_data_cln$etecho2==1]<-2
+cr_data_cln$etecho3[cr_data_cln$etecho3==1]<-3
+RoofR<-c("etecho1","etecho2","etecho3")
+cr_data_cln$Roof<-rowSums(cr_data_cln[,RoofR])
+str(cr_data_cln$Roof)
+cr_data_cln$etecho1<-NULL
+cr_data_cln$etecho2<-NULL
+cr_data_cln$etecho3<-NULL
+cr_data_cln$roof <-as.ordered(cr_data_cln$Roof)
+
+#Feautre FloorCon
+cr_data_cln$eviv2[cr_data_cln$eviv2==1]<-2
+cr_data_cln$eviv3[cr_data_cln$eviv3==1]<-3
+FloorR<-c("eviv1","eviv2","eviv3")
+cr_data_cln$FloorCon<-rowSums(cr_data_cln[,FloorR])
+cr_data_cln$eviv1<-NULL
+cr_data_cln$eviv2<-NULL
+cr_data_cln$eviv3<-NULL
+cr_data_cln$floorCon <-as.ordered(cr_data_cln$FloorCon)
+
+#Feautre roof_material
+cr_data_cln$techocane[cr_data_cln$techocane==1]<-2
+cr_data_cln$techoentrepiso[cr_data_cln$techoentrepiso==1]<-3
+cr_data_cln$techozinc[cr_data_cln$techozinc==1]<-4
+RoofmatR<-c("techootro","techocane","techoentrepiso","techozinc")
+cr_data_cln$roof_material<-rowSums(cr_data_cln[,RoofmatR])
+cr_data_cln$techootro<-NULL
+cr_data_cln$techocane<-NULL
+cr_data_cln$techoentrepiso<-NULL
+cr_data_cln$techozinc<-NULL
+cr_data_cln$roof_material <-as.ordered(cr_data_cln$roof_material)
+
+#Feautre floor_material
+cr_data_cln$pisonatur[cr_data_cln$pisonatur==1]<-2
+cr_data_cln$pisoother[cr_data_cln$pisoother==1]<-3
+cr_data_cln$pisocemento[cr_data_cln$pisocemento==1]<-4
+cr_data_cln$pisomoscer[cr_data_cln$pisomoscer==1]<-5
+floorMateriaR<-c("pisonotiene","pisonatur","pisoother","pisocemento","pisomoscer")
+cr_data_cln$floor_material<-rowSums(cr_data_cln[,floorMateriaR])
+cr_data_cln$pisonotiene<-NULL
+cr_data_cln$pisonatur<-NULL
+cr_data_cln$pisoother<-NULL
+cr_data_cln$pisocemento<-NULL
+cr_data_cln$pisomoscer<-NULL
+cr_data_cln$floor_material <-as.ordered(cr_data_cln$floor_material)
+
+#Feautre energy_source
+cr_data_cln$energcocinar4[cr_data_cln$energcocinar4==1]<-2
+cr_data_cln$energcocinar3[cr_data_cln$energcocinar3==1]<-3
+cr_data_cln$energcocinar2[cr_data_cln$energcocinar2==1]<-4
+EnergySource<-c("energcocinar1","energcocinar4","energcocinar3","energcocinar2")
+cr_data_cln$energy_source<-rowSums(cr_data_cln[,EnergySource])
+cr_data_cln$energcocinar1<-NULL
+cr_data_cln$energcocinar4<-NULL
+cr_data_cln$energcocinar3<-NULL
+cr_data_cln$energcocinar2<-NULL
+cr_data_cln$energy_source <-as.ordered(cr_data_cln$energy_source)
+
+#Feautre disposal
+cr_data_cln$elimbasu5[cr_data_cln$elimbasu5==1]<-2
+cr_data_cln$elimbasu3[cr_data_cln$elimbasu3==1]<-3
+cr_data_cln$elimbasu4[cr_data_cln$elimbasu4==1]<-4
+cr_data_cln$elimbasu2[cr_data_cln$elimbasu2==1]<-5
+cr_data_cln$elimbasu1[cr_data_cln$elimbasu1==1]<-6
+DisposalR<-c("elimbasu6","elimbasu5","elimbasu3","elimbasu4","elimbasu2","elimbasu1")
+cr_data_cln$disposal<-rowSums(cr_data_cln[,DisposalR])
+cr_data_cln$elimbasu6<-NULL
+cr_data_cln$elimbasu5<-NULL
+cr_data_cln$elimbasu3<-NULL
+cr_data_cln$elimbasu4<-NULL
+cr_data_cln$elimbasu2<-NULL
+cr_data_cln$elimbasu1<-NULL
+cr_data_cln$disposal <-as.ordered(cr_data_cln$disposal)
+
+#Feautre education
+cr_data_cln$instlevel2[cr_data_cln$instlevel2==1]<-2
+cr_data_cln$instlevel3[cr_data_cln$instlevel3==1]<-3
+cr_data_cln$instlevel4[cr_data_cln$instlevel4==1]<-4
+cr_data_cln$instlevel5[cr_data_cln$instlevel5==1]<-5
+cr_data_cln$instlevel6[cr_data_cln$instlevel6==1]<-6
+cr_data_cln$instlevel7[cr_data_cln$instlevel7==1]<-7
+cr_data_cln$instlevel8[cr_data_cln$instlevel8==1]<-8
+cr_data_cln$instlevel9[cr_data_cln$instlevel9==1]<-9
+EducationR<-c("instlevel1","instlevel2","instlevel3","instlevel4","instlevel5","instlevel6","instlevel7","instlevel8","instlevel9")
+cr_data_cln$education<-rowSums(cr_data_cln[,EducationR])
+cr_data_cln$instlevel1<-NULL
+cr_data_cln$instlevel2<-NULL
+cr_data_cln$instlevel3<-NULL
+cr_data_cln$instlevel4<-NULL
+cr_data_cln$instlevel5<-NULL
+cr_data_cln$instlevel6<-NULL
+cr_data_cln$instlevel7<-NULL
+cr_data_cln$instlevel8<-NULL
+cr_data_cln$instlevel9<-NULL
+cr_data_cln$education <-as.ordered(cr_data_cln$education)
+
+#Feautre house
+cr_data_cln$tipovivi4[cr_data_cln$tipovivi4==1]<-2
+cr_data_cln$tipovivi3[cr_data_cln$tipovivi3==1]<-3
+cr_data_cln$tipovivi2[cr_data_cln$tipovivi2==1]<-4
+cr_data_cln$tipovivi1[cr_data_cln$tipovivi1==1]<-4
+HouseR<-c("tipovivi5","tipovivi4","tipovivi3","tipovivi2","tipovivi1")
+cr_data_cln$house<-rowSums(cr_data_cln[,HouseR])
+cr_data_cln$tipovivi5<-NULL
+cr_data_cln$tipovivi4<-NULL
+cr_data_cln$tipovivi3<-NULL
+cr_data_cln$tipovivi2<-NULL
+cr_data_cln$tipovivi1<-NULL
+cr_data_cln$house <-as.ordered(cr_data_cln$house)
+
+#Other Features
+cr_data_cln$computer <-as.factor(cr_data_cln$computer)
+cr_data_cln$television <-as.factor(cr_data_cln$television)
+cr_data_cln$mobilephone <-as.factor(cr_data_cln$mobilephone)
+cr_data_cln$male <-as.factor(cr_data_cln$male)
+cr_data_cln$Target <-as.ordered(cr_data_cln$Target)
+
+head(cr_data_cln)
+
+```
+```{r Step 4 - Building the Model  }
+
+#Creating the training and test dataset
+set.seed(123)
+ind<-sample(2,nrow(cr_data_cln), replace = TRUE,prob = c(0.8,0.2))
+cr_data_train<- cr_data_cln[ind==1,]
+cr_data_test<- cr_data_cln[ind==2,]
+nrow(cr_data_train)
+nrow(cr_data_test)
+nrow(cr_data_cln)
+head(cr_data_train$Target)
+
+#PCA Analysis
+Pre<-preProcess(x=cr_data_train,method='pca',pcaComp = 2)
+
+training_set<-predict(Pre,cr_data_train)
+training_set<-training_set[c("PC1","PC2","Target")]
+head(training_set)
+
+testing_set<-predict(Pre,cr_data_test)
+testing_set<-testing_set[c("PC1","PC2","Target")]
+head(testing_set)
+
+#Model - Ordinal Logistic Regression
+cr_model<- polr(Target~v18q+escolari+sanitario+outside_material+Water+electricity+walls+roof+floorCon+roof_material+
+                floor_material+disposal+energy_source+education+house+rooms+dis+male+hogar_nin+hogar_total+
+                r4h3+r4m3+overcrowding+age+hacapo+v14a+refrig+r4h3+r4m3+area1+
+                computer+television+mobilephone+parentesco1+parentesco2+parentesco3+estadocivil1+estadocivil2+estadocivil3+estadocivil4+
+                estadocivil6+estadocivil7, data = cr_data_train, Hess = TRUE, method= "logistic")
+summary(cr_model)
+
+
+cr_model_2<- polr(Target~v18q + escolari + sanitario + outside_material + Water + electricity + walls + roof + floorCon + roof_material + 
+                  floor_material + disposal + energy_source + house + rooms + dis + male + hogar_nin + hogar_total +
+                  r4h3 + r4m3 + age + hacapo + area1 + computer + television + mobilephone + parentesco3 + estadocivil1 + 
+                  estadocivil4 + estadocivil6, data = cr_data_train, Hess = TRUE, method= "logistic")
+summary(cr_model_2)
+
+#P-value Calculation
+ctable<- coef(summary(cr_model_2))
+p<- pnorm(abs(ctable[,"t value"]),lower.tail = FALSE)*2
+ctable<- cbind(ctable,"p value"=p)
+ctable
+
+#Prediction
+pred<-predict(cr_model_2,cr_data_test,type = "class")
+head(pred)
+pred_tab<-table(pred,cr_data_test$Target)
+pred_tab
+model_accuracy<-sum(diag(pred_tab))/sum(pred_tab)
+message("Accuracy is: ", model_accuracy)
+table(cr_data_test$Target)
+print(pred,digits = 3)
+
+# Model Performance  
+pred<-predict(cr_model_2,cr_data_test,type = 'probs')
+head(pred)
+head(cr_data_test$Target)   #Multi-Nomial Classification
+
+```
+```{r Step 5 - Optimize the Model  }
+
+#Create the matrix for train and test data
+#Model for train data
+train_model<-sparse.model.matrix(Target~v18q+escolari+sanitario+outside_material+Water+electricity+walls+roof+floorCon+roof_material+
+                            floor_material+disposal+energy_source+education+house+rooms+dis+male+hogar_nin+hogar_total+
+                            r4h3+r4m3+overcrowding+age+hacapo+v14a+refrig+r4h3+r4m3+area1+
+                            computer+television+mobilephone+parentesco1+parentesco2+parentesco3+estadocivil1+estadocivil2+
+                            estadocivil3+estadocivil4+estadocivil6, data=cr_data_train)
+head(train_model)
+train_label <-cr_data_train[,"Target"]
+nc<-length(unique(train_label))
+
+train_matrix<-xgb.DMatrix(data = as.matrix(train_model),label = as.integer(train_label)-1)
+train_matrix
+
+#Model for test data
+test_model<-sparse.model.matrix(Target~v18q+escolari+sanitario+outside_material+Water+electricity+walls+roof+floorCon+roof_material+
+                             floor_material+disposal+energy_source+education+house+rooms+dis+male+hogar_nin+hogar_total+
+                             r4h3+r4m3+overcrowding+age+hacapo+v14a+refrig+r4h3+r4m3+area1+
+                             computer+television+mobilephone+parentesco1+parentesco2+parentesco3+estadocivil1+estadocivil2+
+                             estadocivil3+estadocivil4+estadocivil6, data=cr_data_test)
+head(test_model)
+test_label <-cr_data_test[,"Target"]
+test_matrix<-xgb.DMatrix(data = as.matrix(test_model),label = as.integer(test_label)-1)
+
+#Create Parameters
+xgb_params = list(
+  objective = 'multi:softprob',
+  num_class = 4,
+  eta = 0.1)
+xgb_params
+
+#Tuning the model
+cv = xgb.cv(
+  data = train_matrix, 
+  nfold = 5, 
+  nrounds = 1500, 
+  verbose = FALSE, 
+  maximize = FALSE,
+  early_stopping_rounds = 25, 
+  params = xgb_params,
+  tree_method = "hist",
+  nthread = 4
+)
+cv
+
+#Extreme Gradient Boosting Model 
+best_model<-xgb.train(params = xgb_params,
+                     data =train_matrix,
+                     nrounds = round(which.min(cv$evaluation_log$test_merror_mean)*1.1,0), 
+                     verbose = FALSE, 
+                     maximize = FALSE,
+                     seed=333,
+                     tree_method = "hist"
+)
+
+best_model
+
+```
+```{r Step 6 - Predicting the target variable from the model  }
+pred<-matrix(predict(best_model,test_matrix), ncol = 4, byrow = TRUE)
+pred
+
+confusionMatrix(factor(apply(pred,1,which.max)), factor(cr_data_test$Target))
+predvalues<-matrix(pred,nrow = nc,ncol=length(pred)/nc) %>%
+  t() %>%
+  data.frame() %>%
+  mutate(label = test_label,max_prob=max.col(.,"last")-1)
+head(predvalues)
+table(prediction=predvalues$max_prob, Actual =predvalues$label)
+
+#Feature importance 
+importance_matrix<-xgb.importance(model = best_model)
+xgb.plot.importance(importance_matrix[1:10,], xlab = "Relative Importance", main = "Top 10 Important Features", fill = "steelblue")
+
+```
+```{r End of the Code }
+```
+
